@@ -15,14 +15,32 @@
  * 
  * @version 2.0.0
  */
+// Add at the top of run_advanced_crud_generator.php
+ini_set('display_errors', 1);
+ini_set('display_startup_errors', 1);
+error_reporting(E_ALL);
 
-// Ensure the AdvancedCRUDGenerator class and its helpers are loadable
-require_once __DIR__ . '/AdvancedCRUDGenerator.php';
+echo "Starting CRUD Generator Script...\n";
+
+// Check if required files exist
+if (!file_exists(__DIR__ . '/AdvancedCRUDGenerator.php')) {
+    echo "ERROR: AdvancedCRUDGenerator.php not found!\n";
+    exit(1);
+}
 
 // Required system files
-require_once __DIR__ . '/../includes/dbconfig.php'; // For database connection ($conn)
-require_once __DIR__ . '/../includes/session.php'; // For permissions and user functions
+echo "Loading required files...\n";
+require_once __DIR__ . '/AdvancedCRUDGenerator.php';
 
+// Test database connection
+echo "Testing database connection...\n";
+require_once __DIR__ . '/../includes/dbconfig.php';
+if (isset($conn)) {
+    echo "✓ Database connection established\n";
+} else {
+    echo "ERROR: Database connection failed!\n";
+    exit(1);
+}
 /**
  * Generates a unique key for pages.
  * 
