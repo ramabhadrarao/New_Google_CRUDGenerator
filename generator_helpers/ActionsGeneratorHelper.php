@@ -31,7 +31,7 @@ trait ActionsGeneratorHelper {
         $content .= "    return isset(\$_SESSION['user_id']) ? \$_SESSION['user_id'] : null;\n";
         $content .= "}\n\n";
         
-        // Helper function to get bind type for column
+        // Helper function to get bind type for  column
         $content .= "/**\n";
         $content .= " * Get the correct bind type for a column in prepared statements\n";
         $content .= " * @param string \$column Column name\n";
