@@ -1226,183 +1226,7 @@ trait ActionsGeneratorHelper {
         return $content;
     }
 
-    /**
-     * Generate batch update action for updating multiple records
-     * 
-     * @return string PHP code for batch update action
-     */
-    private function generateBatchUpdateAction(): string {
-        if (!$this->config['enableBatchOperations']) {
-            return "    // Batch operations are disabled\n";
-        }
-        
-        $content = "    // Batch update multiple records\n";
-        $content .= "    case 'batch_update':\n";
-        $content .= "        // Verify CSRF token\n";
-        $content .= "        if (!isset(\$_POST['csrf_token']) || !verify_csrf_token(\$_POST['csrf_token'], 'manage_{$this->tableName}')) {\n";
-        $content .= "            \$response = ['success' => false, 'message' => 'Invalid security token.'];\n";
-        $content .= "            break;\n";
-        $content .= "        }\n\n";
-        
-        $content .= "        // Check update permission\n";
-        $content .= "        if (!check_permission('update_manage_{$this->tableName}')) {\n";
-        $content .= "            \$response = ['success' => false, 'message' => 'Permission denied to update records.'];\n";
-        $content .= "            break;\n";
-        $content .= "        }\n\n";
-        
-        $content .= "        \$ids = isset(\$_POST['ids']) ? \$_POST['ids'] : '';\n";
-        $content .= "        if (empty(\$ids)) {\n";
-        $content .= "            \$response = ['success' => false, 'message' => 'No records selected for update.'];\n";
-        $content .= "            break;\n";
-        $content .= "        }\n\n";
-        
-        $content .= "        // Parse IDs string to array\n";
-        $content .= "        \$idArray = explode(',', \$ids);\n";
-        $content .= "        \$idArray = array_map('intval', \$idArray);\n";
-        $content .= "        \$idArray = array_filter(\$idArray); // Remove zero values\n\n";
-        
-        $content .= "        if (empty(\$idArray)) {\n";
-        $content .= "            \$response = ['success' => false, 'message' => 'Invalid IDs provided.'];\n";
-        $content .= "            break;\n";
-        $content .= "        }\n\n";
-        
-        $content .= "        // Determine which fields to update\n";
-        $content .= "        \$fieldsToUpdate = [];\n";
-        $content .= "        \$updateValues = [];\n";
-        $content .= "        \$bindTypes = '';\n\n";
-        
-        // Generate batch-editable fields
-        $batchEditableColumns = [];
-        foreach ($this->columns as $column) {
-            // Skip primary key, files, passwords, rich content fields, and system fields
-            if ($column === $this->primaryKey || 
-                in_array($column, ['created_at', 'updated_at', 'created_by', 'updated_by']) ||
-                in_array($this->getColumnFormType($column), ['file', 'image', 'password', 'wysiwyg', 'json_textarea'])) {
-                continue;
-            }
-            
-            $batchEditableColumns[] = $column;
-        }
-        
-        if (!empty($batchEditableColumns)) {
-            $content .= "        // Check each field to see if it should be updated\n";
-            
-            foreach ($batchEditableColumns as $column) {
-                $formType = $this->getColumnFormType($column);
-                
-                $content .= "        // {$column} field\n";
-                $content .= "        if (isset(\$_POST['batch_{$column}'])) {\n";
-                
-                // Special handling for checkbox/boolean fields
-                if (in_array($formType, ['checkbox'])) {
-                    $content .= "            \$fieldsToUpdate[] = \"`{$column}` = ?\";\n";
-                    $content .= "            \$updateValues[] = isset(\$_POST['batch_{$column}']) ? 1 : 0;\n";
-                    $content .= "            \$bindTypes .= 'i';\n";
-                } 
-                // Special handling for boolean_select fields
-                else if ($formType === 'boolean_select') {
-                    $content .= "            \$fieldsToUpdate[] = \"`{$column}` = ?\";\n";
-                    $content .= "            \$updateValues[] = isset(\$_POST['batch_{$column}']) && \$_POST['batch_{$column}'] ? 1 : 0;\n";
-                    $content .= "            \$bindTypes .= 'i';\n";
-                }
-                // Special handling for multi_select fields
-                else if ($formType === 'multi_select') {
-                    $content .= "            if (is_array(\$_POST['batch_{$column}'])) {\n";
-                    $content .= "                \$fieldsToUpdate[] = \"`{$column}` = ?\";\n";
-                    $content .= "                \$updateValues[] = implode(',', \$_POST['batch_{$column}']);\n";
-                    $content .= "                \$bindTypes .= 's';\n";
-                    $content .= "            }\n";
-                }
-                // Standard field handling
-                else {
-                    if ($this->isColumnNullable($column)) {
-                        $content .= "            \$fieldsToUpdate[] = \"`{$column}` = ?\";\n";
-                        $content .= "            \$updateValues[] = empty(\$_POST['batch_{$column}']) ? null : \$_POST['batch_{$column}'];\n";
-                        $content .= "            \$bindTypes .= '" . ($formType === 'number' ? "i" : "s") . "';\n";
-                    } else {
-                        $content .= "            \$fieldsToUpdate[] = \"`{$column}` = ?\";\n";
-                        $content .= "            \$updateValues[] = \$_POST['batch_{$column}'];\n";
-                        $content .= "            \$bindTypes .= '" . ($formType === 'number' ? "i" : "s") . "';\n";
-                    }
-                }
-                
-                $content .= "        }\n\n";
-            }
-        }
-        
-        $content .= "        // No fields selected for update\n";
-        $content .= "        if (empty(\$fieldsToUpdate)) {\n";
-        $content .= "            \$response = ['success' => false, 'message' => 'No fields selected for update.'];\n";
-        $content .= "            break;\n";
-        $content .= "        }\n\n";
-        
-        $content .= "        // Begin transaction\n";
-        $content .= "        \$conn->begin_transaction();\n\n";
-        
-        $content .= "        try {\n";
-        
-        // Add audit fields
-        $content .= "            // Add audit fields\n";
-        
-        if (in_array('updated_at', $this->columns)) {
-            $content .= "            \$fieldsToUpdate[] = \"`updated_at` = CURRENT_TIMESTAMP\";\n";
-        }
-        
-        if (in_array('updated_by', $this->columns)) {
-            $content .= "            \$fieldsToUpdate[] = \"`updated_by` = ?\";\n";
-            $content .= "            \$updateValues[] = get_current_user_id();\n";
-            $content .= "            \$bindTypes .= 'i';\n";
-        }
-        
-        $content .= "\n";
-        
-        $content .= "            // Build the SQL query\n";
-        $content .= "            \$sql = \"UPDATE {$this->tableName} SET \" . implode(', ', \$fieldsToUpdate) . \" WHERE {$this->primaryKey} IN (\" . str_repeat('?,', count(\$idArray) - 1) . \"?)\"; \n";
-        $content .= "            \n";
-        $content .= "            // Prepare statement\n";
-        $content .= "            \$stmt = \$conn->prepare(\$sql);\n";
-        $content .= "            if (!\$stmt) {\n";
-        $content .= "                throw new Exception('Database prepare error: ' . \$conn->error);\n";
-        $content .= "            }\n\n";
-        
-        $content .= "            // All parameters: field values first, then IDs\n";
-        $content .= "            \$params = \$updateValues;\n";
-        $content .= "            foreach (\$idArray as \$id) {\n";
-        $content .= "                \$params[] = \$id;\n";
-        $content .= "                \$bindTypes .= 'i';\n";
-        $content .= "            }\n\n";
-        
-        $content .= "            // Bind parameters\n";
-        $content .= "            \$stmt->bind_param(\$bindTypes, ...\$params);\n\n";
-        
-        $content .= "            // Execute update\n";
-        $content .= "            if (!\$stmt->execute()) {\n";
-        $content .= "                throw new Exception('Error updating records: ' . \$stmt->error);\n";
-        $content .= "            }\n\n";
-        
-        $content .= "            \$affectedRows = \$stmt->affected_rows;\n";
-        $content .= "            \$stmt->close();\n\n";
-        
-        $content .= "            // Commit transaction\n";
-        $content .= "            \$conn->commit();\n\n";
-        
-        $content .= "            \$response = [\n";
-        $content .= "                'success' => true,\n";
-        $content .= "                'message' => \$affectedRows . ' record(s) updated successfully.',\n";
-        $content .= "                'affected_rows' => \$affectedRows\n";
-        $content .= "            ];\n";
-        $content .= "            \n";
-        $content .= "        } catch (Exception \$e) {\n";
-        $content .= "            // Rollback transaction on error\n";
-        $content .= "            \$conn->rollback();\n";
-        $content .= "            \n";
-        $content .= "            \$response = ['success' => false, 'message' => \$e->getMessage()];\n";
-        $content .= "        }\n";
-        $content .= "        break;\n\n";
-        
-        return $content;
-    }
-
+   
     /**
      * Generate export action for exporting data
      * 
@@ -1502,4 +1326,779 @@ trait ActionsGeneratorHelper {
                     $content .= "            \$params[] = \"%{\$search}%\";\n";
                     $content .= "            \$types .= 's';\n";
                 }
+           
             }
+            $content .= "\n";
+        }
+        
+        $content .= "            if (!empty(\$searchConditions)) {\n";
+        $content .= "                \$whereConditions[] = '(' . implode(' OR ', \$searchConditions) . ')';\n";
+        $content .= "            }\n";
+        $content .= "        }\n\n";
+        
+        // Add custom filter conditions
+        $content .= "        // Add custom filter conditions from GET parameters\n";
+        $content .= "        foreach (\$_GET as \$param => \$value) {\n";
+        $content .= "            if (strpos(\$param, 'filter_') === 0 && !empty(\$value)) {\n";
+        $content .= "                \$field = substr(\$param, 7); // Remove 'filter_' prefix\n";
+        $content .= "                if (in_array(\$field, \$validSortFields)) {\n";
+        $content .= "                    \$whereConditions[] = \"a.{\$field} = ?\";\n";
+        $content .= "                    \$params[] = \$value;\n";
+        $content .= "                    \$types .= get_bind_type_for_column(\$field);\n";
+        $content .= "                }\n";
+        $content .= "            }\n";
+        $content .= "        }\n\n";
+        
+        // Build the complete WHERE clause
+        $content .= "        // Combine WHERE conditions\n";
+        $content .= "        if (!empty(\$whereConditions)) {\n";
+        $content .= "            \$query .= \" WHERE \" . implode(' AND ', \$whereConditions);\n";
+        $content .= "        }\n\n";
+        
+        // Add ORDER BY
+        $content .= "        // Add ORDER BY clause\n";
+        $content .= "        \$query .= \" ORDER BY a.{\$sortField} {\$sortDirection}\";\n\n";
+        
+        // Prepare and execute the query
+        $content .= "        // Prepare the statement\n";
+        $content .= "        \$stmt = \$conn->prepare(\$query);\n";
+        $content .= "        \n";
+        $content .= "        if (!\$stmt) {\n";
+        $content .= "            \$response = ['success' => false, 'message' => 'Database query error: ' . \$conn->error];\n";
+        $content .= "            break;\n";
+        $content .= "        }\n\n";
+        
+        $content .= "        // Bind parameters if any\n";
+        $content .= "        if (!empty(\$params) && !empty(\$types)) {\n";
+        $content .= "            \$stmt->bind_param(\$types, ...\$params);\n";
+        $content .= "        }\n\n";
+        
+        $content .= "        // Execute the query\n";
+        $content .= "        if (!\$stmt->execute()) {\n";
+        $content .= "            \$response = ['success' => false, 'message' => 'Database execute error: ' . \$stmt->error];\n";
+        $content .= "            \$stmt->close();\n";
+        $content .= "            break;\n";
+        $content .= "        }\n\n";
+        
+        $content .= "        \$result = \$stmt->get_result();\n";
+        $content .= "        \$data = [];\n\n";
+        
+        $content .= "        // Fetch all rows\n";
+        $content .= "        while (\$row = \$result->fetch_assoc()) {\n";
+        $content .= "            \$data[] = \$row;\n";
+        $content .= "        }\n";
+        $content .= "        \n";
+        $content .= "        \$stmt->close();\n\n";
+        
+        // Now handle different export formats
+        $content .= "        // Handle different export formats\n";
+        $content .= "        switch (\$format) {\n";
+        
+        // CSV format
+        if (in_array('csv', $this->config['enableExports'])) {
+            $content .= "            case 'csv':\n";
+            $content .= "                // Set headers for CSV download\n";
+            $content .= "                header('Content-Type: text/csv; charset=utf-8');\n";
+            $content .= "                header('Content-Disposition: attachment; filename={$this->tableName}_export_' . date('Y-m-d') . '.csv');\n";
+            $content .= "                \n";
+            $content .= "                // Create output stream\n";
+            $content .= "                \$output = fopen('php://output', 'w');\n";
+            $content .= "                \n";
+            $content .= "                // Add UTF-8 BOM for Excel compatibility\n";
+            $content .= "                fputs(\$output, \"\\xEF\\xBB\\xBF\");\n";
+            $content .= "                \n";
+            $content .= "                if (!empty(\$data)) {\n";
+            $content .= "                    // Add header row\n";
+            $content .= "                    fputcsv(\$output, array_keys(\$data[0]));\n";
+            $content .= "                    \n";
+            $content .= "                    // Add data rows\n";
+            $content .= "                    foreach (\$data as \$row) {\n";
+            $content .= "                        fputcsv(\$output, \$row);\n";
+            $content .= "                    }\n";
+            $content .= "                }\n";
+            $content .= "                \n";
+            $content .= "                fclose(\$output);\n";
+            $content .= "                exit;\n";
+        }
+        
+        // Excel format
+        if (in_array('excel', $this->config['enableExports'])) {
+            $content .= "            case 'excel':\n";
+            $content .= "                // Require PhpSpreadsheet if available\n";
+            $content .= "                if (!class_exists('\\PhpOffice\\PhpSpreadsheet\\Spreadsheet')) {\n";
+            $content .= "                    \$response = ['success' => false, 'message' => 'PhpSpreadsheet library not available. Please install it with: composer require phpoffice/phpspreadsheet'];\n";
+            $content .= "                    break;\n";
+            $content .= "                }\n";
+            $content .= "                \n";
+            $content .= "                // Create new spreadsheet\n";
+            $content .= "                \$spreadsheet = new \\PhpOffice\\PhpSpreadsheet\\Spreadsheet();\n";
+            $content .= "                \$sheet = \$spreadsheet->getActiveSheet();\n";
+            $content .= "                \n";
+            $content .= "                if (!empty(\$data)) {\n";
+            $content .= "                    // Add header row\n";
+            $content .= "                    \$headers = array_keys(\$data[0]);\n";
+            $content .= "                    \$col = 1;\n";
+            $content .= "                    foreach (\$headers as \$header) {\n";
+            $content .= "                        \$sheet->setCellValueByColumnAndRow(\$col++, 1, \$header);\n";
+            $content .= "                    }\n";
+            $content .= "                    \n";
+            $content .= "                    // Add data rows\n";
+            $content .= "                    \$row = 2;\n";
+            $content .= "                    foreach (\$data as \$dataRow) {\n";
+            $content .= "                        \$col = 1;\n";
+            $content .= "                        foreach (\$dataRow as \$value) {\n";
+            $content .= "                            \$sheet->setCellValueByColumnAndRow(\$col++, \$row, \$value);\n";
+            $content .= "                        }\n";
+            $content .= "                        \$row++;\n";
+            $content .= "                    }\n";
+            $content .= "                }\n";
+            $content .= "                \n";
+            $content .= "                // Set headers for Excel download\n";
+            $content .= "                header('Content-Type: application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');\n";
+            $content .= "                header('Content-Disposition: attachment; filename={$this->tableName}_export_' . date('Y-m-d') . '.xlsx');\n";
+            $content .= "                header('Cache-Control: max-age=0');\n";
+            $content .= "                \n";
+            $content .= "                // Save to output\n";
+            $content .= "                \$writer = new \\PhpOffice\\PhpSpreadsheet\\Writer\\Xlsx(\$spreadsheet);\n";
+            $content .= "                \$writer->save('php://output');\n";
+            $content .= "                exit;\n";
+        }
+        
+        // PDF format
+        if (in_array('pdf', $this->config['enableExports'])) {
+            $content .= "            case 'pdf':\n";
+            $content .= "                // Check for PDF library\n";
+            $content .= "                if (!class_exists('TCPDF')) {\n";
+            $content .= "                    \$response = ['success' => false, 'message' => 'TCPDF library not available. Please install it with: composer require tecnickcom/tcpdf'];\n";
+            $content .= "                    break;\n";
+            $content .= "                }\n";
+            $content .= "                \n";
+            $content .= "                // Create new PDF document\n";
+            $content .= "                \$pdf = new TCPDF('L', 'mm', 'A4', true, 'UTF-8', false);\n";
+            $content .= "                \n";
+            $content .= "                // Set document information\n";
+            $content .= "                \$pdf->SetCreator('Advanced CRUD Generator');\n";
+            $content .= "                \$pdf->SetAuthor('System');\n";
+            $content .= "                \$pdf->SetTitle('{$this->tableName} Export');\n";
+            $content .= "                \$pdf->SetSubject('{$this->tableName} Data Export');\n";
+            $content .= "                \n";
+            $content .= "                // Set margins\n";
+            $content .= "                \$pdf->SetMargins(10, 10, 10);\n";
+            $content .= "                \$pdf->SetHeaderMargin(5);\n";
+            $content .= "                \$pdf->SetFooterMargin(10);\n";
+            $content .= "                \n";
+            $content .= "                // Set auto page breaks\n";
+            $content .= "                \$pdf->SetAutoPageBreak(TRUE, 10);\n";
+            $content .= "                \n";
+            $content .= "                // Add a page\n";
+            $content .= "                \$pdf->AddPage();\n";
+            $content .= "                \n";
+            $content .= "                if (!empty(\$data)) {\n";
+            $content .= "                    // Get headers\n";
+            $content .= "                    \$headers = array_keys(\$data[0]);\n";
+            $content .= "                    \n";
+            $content .= "                    // Calculate column widths\n";
+            $content .= "                    \$colCount = count(\$headers);\n";
+            $content .= "                    \$colWidth = 270 / \$colCount; // 270mm is approximate width of A4 landscape\n";
+            $content .= "                    \n";
+            $content .= "                    // Add header row\n";
+            $content .= "                    \$pdf->SetFillColor(200, 220, 255);\n";
+            $content .= "                    \$pdf->SetFont('helvetica', 'B', 9);\n";
+            $content .= "                    foreach (\$headers as \$i => \$header) {\n";
+            $content .= "                        \$pdf->Cell(\$colWidth, 7, \$header, 1, 0, 'C', 1);\n";
+            $content .= "                    }\n";
+            $content .= "                    \$pdf->Ln();\n";
+            $content .= "                    \n";
+            $content .= "                    // Add data rows\n";
+            $content .= "                    \$pdf->SetFont('helvetica', '', 8);\n";
+            $content .= "                    \$pdf->SetFillColor(255, 255, 255);\n";
+            $content .= "                    foreach (\$data as \$row) {\n";
+            $content .= "                        foreach (\$row as \$value) {\n";
+            $content .= "                            \$pdf->Cell(\$colWidth, 6, \$value, 1, 0, 'L');\n";
+            $content .= "                        }\n";
+            $content .= "                        \$pdf->Ln();\n";
+            $content .= "                    }\n";
+            $content .= "                }\n";
+            $content .= "                \n";
+            $content .= "                // Output PDF\n";
+            $content .= "                \$pdf->Output('{$this->tableName}_export_' . date('Y-m-d') . '.pdf', 'D');\n";
+            $content .= "                exit;\n";
+        }
+        
+        // Default case
+        $content .= "            default:\n";
+        $content .= "                \$response = ['success' => false, 'message' => 'Unsupported export format.'];\n";
+        $content .= "                break;\n";
+        $content .= "        }\n";
+        $content .= "        break;\n\n";
+        
+        return $content;
+    }
+
+
+    /**
+ * Generate import CSV action case
+ * 
+ * @return string PHP code for import CSV action
+ */
+private function generateImportCsvActionCase(): string {
+    $content = "    // Import data from CSV file\n";
+    $content .= "    case 'import_csv':\n";
+    $content .= "        // Check import permission\n";
+    $content .= "        if (!check_permission('import_manage_{$this->tableName}')) {\n";
+    $content .= "            \$response = ['success' => false, 'message' => 'Permission denied to import data.'];\n";
+    $content .= "            break;\n";
+    $content .= "        }\n\n";
+    
+    $content .= "        // Verify CSRF token\n";
+    $content .= "        if (!isset(\$_POST['csrf_token']) || !verify_csrf_token(\$_POST['csrf_token'], 'manage_{$this->tableName}')) {\n";
+    $content .= "            \$response = ['success' => false, 'message' => 'Invalid security token.'];\n";
+    $content .= "            break;\n";
+    $content .= "        }\n\n";
+    
+    $content .= "        // Check if file was uploaded\n";
+    $content .= "        if (!isset(\$_FILES['import_file']) || \$_FILES['import_file']['error'] !== UPLOAD_ERR_OK) {\n";
+    $content .= "            \$errorMessages = [\n";
+    $content .= "                UPLOAD_ERR_INI_SIZE => 'The uploaded file exceeds the upload_max_filesize directive in php.ini',\n";
+    $content .= "                UPLOAD_ERR_FORM_SIZE => 'The uploaded file exceeds the MAX_FILE_SIZE directive in the HTML form',\n";
+    $content .= "                UPLOAD_ERR_PARTIAL => 'The uploaded file was only partially uploaded',\n";
+    $content .= "                UPLOAD_ERR_NO_FILE => 'No file was uploaded',\n";
+    $content .= "                UPLOAD_ERR_NO_TMP_DIR => 'Missing a temporary folder',\n";
+    $content .= "                UPLOAD_ERR_CANT_WRITE => 'Failed to write file to disk',\n";
+    $content .= "                UPLOAD_ERR_EXTENSION => 'A PHP extension stopped the file upload'\n";
+    $content .= "            ];\n";
+    $content .= "            \$errorMsg = isset(\$_FILES['import_file']) ? \$errorMessages[\$_FILES['import_file']['error']] ?? 'Unknown upload error' : 'No file uploaded';\n";
+    $content .= "            \$response = ['success' => false, 'message' => \$errorMsg];\n";
+    $content .= "            break;\n";
+    $content .= "        }\n\n";
+    
+    $content .= "        // Check file type\n";
+    $content .= "        \$fileExt = strtolower(pathinfo(\$_FILES['import_file']['name'], PATHINFO_EXTENSION));\n";
+    $content .= "        if (\$fileExt !== 'csv') {\n";
+    $content .= "            \$response = ['success' => false, 'message' => 'Only CSV files are allowed.'];\n";
+    $content .= "            break;\n";
+    $content .= "        }\n\n";
+    
+    $content .= "        // Get import options\n";
+    $content .= "        \$hasHeader = isset(\$_POST['has_header']) && \$_POST['has_header'] === 'on';\n";
+    $content .= "        \$updateKey = isset(\$_POST['update_key']) ? \$_POST['update_key'] : '';\n\n";
+    
+    $content .= "        // Begin transaction\n";
+    $content .= "        \$conn->begin_transaction();\n";
+    $content .= "        \n";
+    $content .= "        try {\n";
+    $content .= "            // Open the uploaded file\n";
+    $content .= "            \$file = fopen(\$_FILES['import_file']['tmp_name'], 'r');\n";
+    $content .= "            if (!\$file) {\n";
+    $content .= "                throw new Exception('Could not open the uploaded file.');\n";
+    $content .= "            }\n\n";
+    
+    $content .= "            // Statistics\n";
+    $content .= "            \$rowCount = 0;\n";
+    $content .= "            \$insertedCount = 0;\n";
+    $content .= "            \$updatedCount = 0;\n";
+    $content .= "            \$errorCount = 0;\n";
+    $content .= "            \$errors = [];\n\n";
+    
+    $content .= "            // Get CSV headers\n";
+    $content .= "            \$headers = [];\n";
+    $content .= "            if (\$hasHeader) {\n";
+    $content .= "                \$headers = fgetcsv(\$file);\n";
+    $content .= "                if (!\$headers) {\n";
+    $content .= "                    throw new Exception('CSV file is empty or malformed.');\n";
+    $content .= "                }\n";
+    $content .= "                // Trim headers and convert to lowercase for case-insensitive matching\n";
+    $content .= "                \$headers = array_map(function(\$header) { return strtolower(trim(\$header)); }, \$headers);\n";
+    $content .= "            } else {\n";
+    $content .= "                // Use column names as headers, excluding primary key if auto_increment\n";
+    $content .= "                \$insertableColumns = array_filter(\$this->columns, function(\$column) {\n";
+    $content .= "                    if (\$column === '{$this->primaryKey}') {\n";
+    $content .= "                        \$def = \$this->getColumnDef(\$column);\n";
+    $content .= "                        return strpos(strtoupper(\$def['attributes'] ?? ''), 'AUTO_INCREMENT') === false;\n";
+    $content .= "                    }\n";
+    $content .= "                    return !\$column === 'created_at' && !\$column === 'updated_at';\n";
+    $content .= "                });\n";
+    $content .= "                \$headers = \$insertableColumns;\n";
+    $content .= "            }\n\n";
+    
+    // Prepare statements for insert and update
+    $content .= "            // Prepare for database operations\n";
+    $content .= "            \$validColumns = ['" . implode("', '", $this->columns) . "'];\n";
+    $content .= "            \$allowedColumns = array_filter(\$validColumns, function(\$col) {\n";
+    $content .= "                return \$col !== 'created_at' && \$col !== 'updated_at';\n";
+    $content .= "            });\n\n";
+    
+    $content .= "            // Process each row\n";
+    $content .= "            while ((\$data = fgetcsv(\$file)) !== false) {\n";
+    $content .= "                \$rowCount++;\n";
+    $content .= "                \n";
+    $content .= "                // Skip empty rows\n";
+    $content .= "                if (count(\$data) <= 1 && empty(\$data[0])) {\n";
+    $content .= "                    continue;\n";
+    $content .= "                }\n\n";
+    
+    $content .= "                // Skip rows with fewer columns than headers\n";
+    $content .= "                if (count(\$data) < count(\$headers)) {\n";
+    $content .= "                    \$errors[] = ['row' => \$rowCount, 'error' => 'Row has fewer columns than expected. Got ' . count(\$data) . ', expected ' . count(\$headers)];\n";
+    $content .= "                    \$errorCount++;\n";
+    $content .= "                    continue;\n";
+    $content .= "                }\n\n";
+    
+    $content .= "                // Combine headers with data\n";
+    $content .= "                \$rowData = [];\n";
+    $content .= "                foreach (\$headers as \$i => \$header) {\n";
+    $content .= "                    // Skip columns not in our table\n";
+    $content .= "                    if (!\$hasHeader || in_array(\$header, \$allowedColumns)) {\n";
+    $content .= "                        \$column = \$hasHeader ? \$header : \$header;\n";
+    $content .= "                        \$rowData[\$column] = isset(\$data[\$i]) ? trim(\$data[\$i]) : '';\n";
+    $content .= "                    }\n";
+    $content .= "                }\n\n";
+    
+    $content .= "                try {\n";
+    $content .= "                    // Check if we need to update or insert\n";
+    $content .= "                    \$shouldUpdate = false;\n";
+    $content .= "                    \$existingId = null;\n";
+    $content .= "                    \n";
+    $content .= "                    if (!empty(\$updateKey) && isset(\$rowData[\$updateKey]) && !empty(\$rowData[\$updateKey])) {\n";
+    $content .= "                        // Check if record with this key exists\n";
+    $content .= "                        \$checkSql = \"SELECT {$this->primaryKey} FROM {$this->tableName} WHERE {\$updateKey} = ?\";\n";
+    $content .= "                        \$checkStmt = \$conn->prepare(\$checkSql);\n";
+    $content .= "                        \$checkStmt->bind_param('s', \$rowData[\$updateKey]);\n";
+    $content .= "                        \$checkStmt->execute();\n";
+    $content .= "                        \$checkResult = \$checkStmt->get_result();\n";
+    $content .= "                        \n";
+    $content .= "                        if (\$checkResult->num_rows > 0) {\n";
+    $content .= "                            \$shouldUpdate = true;\n";
+    $content .= "                            \$existingRow = \$checkResult->fetch_assoc();\n";
+    $content .= "                            \$existingId = \$existingRow['{$this->primaryKey}'];\n";
+    $content .= "                        }\n";
+    $content .= "                        \$checkStmt->close();\n";
+    $content .= "                    }\n\n";
+    
+    $content .= "                    if (\$shouldUpdate) {\n";
+    $content .= "                        // Update existing record\n";
+    $content .= "                        \$updateColumns = [];\n";
+    $content .= "                        \$updateValues = [];\n";
+    $content .= "                        \$updateTypes = '';\n";
+    $content .= "                        \n";
+    $content .= "                        foreach (\$rowData as \$column => \$value) {\n";
+    $content .= "                            // Skip the primary key and audit columns in update\n";
+    $content .= "                            if (\$column !== '{$this->primaryKey}' && \n";
+    $content .= "                                \$column !== 'created_at' && \n";
+    $content .= "                                \$column !== 'updated_at' &&\n";
+    $content .= "                                \$column !== 'created_by' &&\n";
+    $content .= "                                \$column !== 'updated_by') {\n";
+    $content .= "                                \$updateColumns[] = \"`{\$column}` = ?\";\n";
+    $content .= "                                \$updateValues[] = \$value;\n";
+    $content .= "                                \$updateTypes .= get_bind_type_for_column(\$column);\n";
+    $content .= "                            }\n";
+    $content .= "                        }\n\n";
+    
+    $content .= "                        // Add updated_at and updated_by\n";
+    $content .= "                        if (in_array('updated_at', \$validColumns)) {\n";
+    $content .= "                            \$updateColumns[] = \"`updated_at` = CURRENT_TIMESTAMP\";\n";
+    $content .= "                        }\n";
+    $content .= "                        \n";
+    $content .= "                        if (in_array('updated_by', \$validColumns)) {\n";
+    $content .= "                            \$currentUserId = get_current_user_id();\n";
+    $content .= "                            if (\$currentUserId) {\n";
+    $content .= "                                \$updateColumns[] = \"`updated_by` = ?\";\n";
+    $content .= "                                \$updateValues[] = \$currentUserId;\n";
+    $content .= "                                \$updateTypes .= 'i';\n";
+    $content .= "                            }\n";
+    $content .= "                        }\n\n";
+    
+    $content .= "                        // Execute update if there are columns to update\n";
+    $content .= "                        if (!empty(\$updateColumns)) {\n";
+    $content .= "                            \$updateSql = \"UPDATE {$this->tableName} SET \" . implode(', ', \$updateColumns) . \" WHERE {$this->primaryKey} = ?\";\n";
+    $content .= "                            \$updateValues[] = \$existingId;\n";
+    $content .= "                            \$updateTypes .= 'i';\n";
+    $content .= "                            \n";
+    $content .= "                            \$updateStmt = \$conn->prepare(\$updateSql);\n";
+    $content .= "                            \$updateStmt->bind_param(\$updateTypes, ...\$updateValues);\n";
+    $content .= "                            \$updateStmt->execute();\n";
+    $content .= "                            \$updateStmt->close();\n";
+    $content .= "                            \$updatedCount++;\n";
+    $content .= "                        }\n";
+    $content .= "                    } else {\n";
+    $content .= "                        // Insert new record\n";
+    $content .= "                        \$insertColumns = [];\n";
+    $content .= "                        \$insertPlaceholders = [];\n";
+    $content .= "                        \$insertValues = [];\n";
+    $content .= "                        \$insertTypes = '';\n";
+    $content .= "                        \n";
+    $content .= "                        foreach (\$rowData as \$column => \$value) {\n";
+    $content .= "                            // Skip primary key if auto increment\n";
+    $content .= "                            if (\$column === '{$this->primaryKey}') {\n";
+    $content .= "                                \$def = \$this->getColumnDef(\$column);\n";
+    $content .= "                                if (strpos(strtoupper(\$def['attributes'] ?? ''), 'AUTO_INCREMENT') !== false) {\n";
+    $content .= "                                    continue;\n";
+    $content .= "                                }\n";
+    $content .= "                            }\n";
+    $content .= "                            \n";
+    $content .= "                            // Skip audit columns\n";
+    $content .= "                            if (\$column !== 'created_at' && \$column !== 'updated_at') {\n";
+    $content .= "                                \$insertColumns[] = \"`{\$column}`\";\n";
+    $content .= "                                \$insertPlaceholders[] = \"?\";\n";
+    $content .= "                                \$insertValues[] = \$value;\n";
+    $content .= "                                \$insertTypes .= get_bind_type_for_column(\$column);\n";
+    $content .= "                            }\n";
+    $content .= "                        }\n\n";
+    
+    $content .= "                        // Add created_at, updated_at and user tracking\n";
+    $content .= "                        if (in_array('created_at', \$validColumns)) {\n";
+    $content .= "                            \$insertColumns[] = \"`created_at`\";\n";
+    $content .= "                            \$insertPlaceholders[] = \"CURRENT_TIMESTAMP\";\n";
+    $content .= "                        }\n";
+    $content .= "                        \n";
+    $content .= "                        if (in_array('updated_at', \$validColumns)) {\n";
+    $content .= "                            \$insertColumns[] = \"`updated_at`\";\n";
+    $content .= "                            \$insertPlaceholders[] = \"CURRENT_TIMESTAMP\";\n";
+    $content .= "                        }\n";
+    $content .= "                        \n";
+    $content .= "                        \$currentUserId = get_current_user_id();\n";
+    $content .= "                        if (in_array('created_by', \$validColumns) && \$currentUserId) {\n";
+    $content .= "                            \$insertColumns[] = \"`created_by`\";\n";
+    $content .= "                            \$insertPlaceholders[] = \"?\";\n";
+    $content .= "                            \$insertValues[] = \$currentUserId;\n";
+    $content .= "                            \$insertTypes .= 'i';\n";
+    $content .= "                        }\n";
+    $content .= "                        \n";
+    $content .= "                        if (in_array('updated_by', \$validColumns) && \$currentUserId) {\n";
+    $content .= "                            \$insertColumns[] = \"`updated_by`\";\n";
+    $content .= "                            \$insertPlaceholders[] = \"?\";\n";
+    $content .= "                            \$insertValues[] = \$currentUserId;\n";
+    $content .= "                            \$insertTypes .= 'i';\n";
+    $content .= "                        }\n\n";
+    
+    $content .= "                        // Execute insert\n";
+    $content .= "                        \$insertSql = \"INSERT INTO {$this->tableName} (\" . implode(', ', \$insertColumns) . \") VALUES (\" . implode(', ', \$insertPlaceholders) . \")\";\n";
+    $content .= "                        \$insertStmt = \$conn->prepare(\$insertSql);\n";
+    $content .= "                        \n";
+    $content .= "                        if (!empty(\$insertTypes)) {\n";
+    $content .= "                            \$insertStmt->bind_param(\$insertTypes, ...\$insertValues);\n";
+    $content .= "                        }\n";
+    $content .= "                        \n";
+    $content .= "                        \$insertStmt->execute();\n";
+    $content .= "                        \$insertStmt->close();\n";
+    $content .= "                        \$insertedCount++;\n";
+    $content .= "                    }\n";
+    $content .= "                } catch (Exception \$e) {\n";
+    $content .= "                    \$errors[] = ['row' => \$rowCount, 'error' => \$e->getMessage()];\n";
+    $content .= "                    \$errorCount++;\n";
+    $content .= "                }\n";
+    $content .= "            }\n\n";
+    
+    $content .= "            // Close the file\n";
+    $content .= "            fclose(\$file);\n";
+    $content .= "            \n";
+    $content .= "            // Commit the transaction\n";
+    $content .= "            \$conn->commit();\n";
+    $content .= "            \n";
+    $content .= "            // Return success\n";
+    $content .= "            \$response = [\n";
+    $content .= "                'success' => true,\n";
+    $content .= "                'message' => 'Import completed with ' . \$errorCount . ' errors.',\n";
+    $content .= "                'processed_rows' => \$rowCount,\n";
+    $content .= "                'inserted_rows' => \$insertedCount,\n";
+    $content .= "                'updated_rows' => \$updatedCount,\n";
+    $content .= "                'error_rows' => \$errorCount,\n";
+    $content .= "                'errors_details' => \$errors\n";
+    $content .= "            ];\n";
+    $content .= "            \n";
+    $content .= "        } catch (Exception \$e) {\n";
+    $content .= "            // Rollback the transaction\n";
+    $content .= "            \$conn->rollback();\n";
+    $content .= "            \n";
+    $content .= "            \$response = ['success' => false, 'message' => 'Import error: ' . \$e->getMessage()];\n";
+    $content .= "        }\n";
+    $content .= "        break;\n\n";
+    
+    return $content;
+}
+
+/**
+ * Generate foreign key search actions for select2 dropdowns
+ * 
+ * @return string PHP code for foreign key search actions
+ */
+private function generateForeignKeySearchActions(): string {
+    if (empty($this->foreignKeys)) {
+        return ""; // No foreign keys to search
+    }
+    
+    $content = "";
+    
+    foreach ($this->foreignKeys as $column => $fkDetails) {
+        $content .= "    // Search for {$fkDetails['table']} records (for the {$column} field)\n";
+        $content .= "    case 'search_{$fkDetails['table']}':\n";
+        $content .= "        // Check read permission\n";
+        $content .= "        if (!check_permission('read_manage_{$this->tableName}')) {\n";
+        $content .= "            \$response = ['success' => false, 'message' => 'Permission denied.'];\n";
+        $content .= "            break;\n";
+        $content .= "        }\n\n";
+        
+        $content .= "        \$searchTerm = isset(\$_GET['search_term']) ? \$_GET['search_term'] : '';\n";
+        $content .= "        \$page = isset(\$_GET['page']) ? intval(\$_GET['page']) : 1;\n";
+        $content .= "        \$limit = 10; // Number of results per page for select2\n";
+        $content .= "        \$offset = (\$page - 1) * \$limit;\n\n";
+        
+        $content .= "        // Build the query\n";
+        $content .= "        \$query = \"SELECT {$fkDetails['key']} as id, {$fkDetails['field']} as text FROM {$fkDetails['table']}\";\n";
+        $content .= "        \$countQuery = \"SELECT COUNT(*) as total FROM {$fkDetails['table']}\";\n";
+        $content .= "        \$params = [];\n";
+        $content .= "        \$types = '';\n\n";
+        
+        $content .= "        // Add search condition\n";
+        $content .= "        if (!empty(\$searchTerm)) {\n";
+        $content .= "            \$query .= \" WHERE {$fkDetails['field']} LIKE ?\";\n";
+        $content .= "            \$countQuery .= \" WHERE {$fkDetails['field']} LIKE ?\";\n";
+        $content .= "            \$params[] = \"%{\$searchTerm}%\";\n";
+        $content .= "            \$types .= 's';\n";
+        $content .= "        }\n\n";
+        
+        $content .= "        // Add ordering\n";
+        $content .= "        \$query .= \" ORDER BY {$fkDetails['field']} ASC\";\n\n";
+        
+        $content .= "        // Add pagination\n";
+        $content .= "        \$query .= \" LIMIT ?, ?\";\n";
+        $content .= "        \$params[] = \$offset;\n";
+        $content .= "        \$params[] = \$limit;\n";
+        $content .= "        \$types .= 'ii';\n\n";
+        
+        $content .= "        // Get total count\n";
+        $content .= "        \$countStmt = \$conn->prepare(\$countQuery);\n";
+        $content .= "        \$countTotal = 0;\n";
+        $content .= "        \n";
+        $content .= "        if (\$countStmt) {\n";
+        $content .= "            if (!empty(\$searchTerm)) {\n";
+        $content .= "                \$countStmt->bind_param('s', \$params[0]);\n";
+        $content .= "            }\n";
+        $content .= "            \$countStmt->execute();\n";
+        $content .= "            \$countResult = \$countStmt->get_result();\n";
+        $content .= "            if (\$countRow = \$countResult->fetch_assoc()) {\n";
+        $content .= "                \$countTotal = \$countRow['total'];\n";
+        $content .= "            }\n";
+        $content .= "            \$countStmt->close();\n";
+        $content .= "        }\n\n";
+        
+        $content .= "        // Fetch data\n";
+        $content .= "        \$stmt = \$conn->prepare(\$query);\n";
+        $content .= "        \n";
+        $content .= "        if (!\$stmt) {\n";
+        $content .= "            \$response = ['success' => false, 'message' => 'Database query error: ' . \$conn->error];\n";
+        $content .= "            break;\n";
+        $content .= "        }\n\n";
+        
+        $content .= "        if (\$types) {\n";
+        $content .= "            \$stmt->bind_param(\$types, ...\$params);\n";
+        $content .= "        }\n\n";
+        
+        $content .= "        if (!\$stmt->execute()) {\n";
+        $content .= "            \$response = ['success' => false, 'message' => 'Database execute error: ' . \$stmt->error];\n";
+        $content .= "            \$stmt->close();\n";
+        $content .= "            break;\n";
+        $content .= "        }\n\n";
+        
+        $content .= "        \$result = \$stmt->get_result();\n";
+        $content .= "        \$items = [];\n\n";
+        
+        $content .= "        while (\$row = \$result->fetch_assoc()) {\n";
+        $content .= "            \$items[] = [\n";
+        $content .= "                'id' => \$row['id'],\n";
+        $content .= "                'text' => \$row['text']\n";
+        $content .= "            ];\n";
+        $content .= "        }\n\n";
+        
+        $content .= "        \$stmt->close();\n\n";
+        
+        $content .= "        // Format response for Select2\n";
+        $content .= "        \$response = [\n";
+        $content .= "            'success' => true,\n";
+        $content .= "            'items' => \$items,\n";
+        $content .= "            'total_count' => \$countTotal\n";
+        $content .= "        ];\n";
+        $content .= "        break;\n\n";
+    }
+    
+    return $content;
+}
+
+/**
+ * Generate batch update action for updating multiple records
+ * 
+ * @return string PHP code for batch update action
+ */
+private function generateBatchUpdateAction(): string {
+    if (!$this->config['enableBatchOperations']) {
+        return "    // Batch operations are disabled\n";
+    }
+    
+    $content = "    // Batch update multiple records\n";
+    $content .= "    case 'batch_update':\n";
+    $content .= "        // Verify CSRF token\n";
+    $content .= "        if (!isset(\$_POST['csrf_token']) || !verify_csrf_token(\$_POST['csrf_token'], 'manage_{$this->tableName}')) {\n";
+    $content .= "            \$response = ['success' => false, 'message' => 'Invalid security token.'];\n";
+    $content .= "            break;\n";
+    $content .= "        }\n\n";
+    
+    $content .= "        // Check update permission\n";
+    $content .= "        if (!check_permission('update_manage_{$this->tableName}')) {\n";
+    $content .= "            \$response = ['success' => false, 'message' => 'Permission denied to update records.'];\n";
+    $content .= "            break;\n";
+    $content .= "        }\n\n";
+    
+    $content .= "        \$ids = isset(\$_POST['ids']) ? \$_POST['ids'] : '';\n";
+    $content .= "        if (empty(\$ids)) {\n";
+    $content .= "            \$response = ['success' => false, 'message' => 'No records selected for update.'];\n";
+    $content .= "            break;\n";
+    $content .= "        }\n\n";
+    
+    $content .= "        // Parse IDs string to array\n";
+    $content .= "        \$idArray = explode(',', \$ids);\n";
+    $content .= "        \$idArray = array_map('intval', \$idArray);\n";
+    $content .= "        \$idArray = array_filter(\$idArray); // Remove zero values\n\n";
+    
+    $content .= "        if (empty(\$idArray)) {\n";
+    $content .= "            \$response = ['success' => false, 'message' => 'Invalid IDs provided.'];\n";
+    $content .= "            break;\n";
+    $content .= "        }\n\n";
+    
+    $content .= "        // Determine which fields to update\n";
+    $content .= "        \$fieldsToUpdate = [];\n";
+    $content .= "        \$updateValues = [];\n";
+    $content .= "        \$bindTypes = '';\n\n";
+    
+    // Generate batch-editable fields
+    $batchEditableColumns = [];
+    foreach ($this->columns as $column) {
+        // Skip primary key, files, passwords, rich content fields, and system fields
+        if ($column === $this->primaryKey || 
+            in_array($column, ['created_at', 'updated_at', 'created_by', 'updated_by']) ||
+            in_array($this->getColumnFormType($column), ['file', 'image', 'password', 'wysiwyg', 'json_textarea'])) {
+            continue;
+        }
+        
+        $batchEditableColumns[] = $column;
+    }
+    
+    if (!empty($batchEditableColumns)) {
+        $content .= "        // Check each field to see if it should be updated\n";
+        
+        foreach ($batchEditableColumns as $column) {
+            $formType = $this->getColumnFormType($column);
+            
+            $content .= "        // {$column} field\n";
+            $content .= "        if (isset(\$_POST['batch_{$column}'])) {\n";
+            
+            // Special handling for checkbox/boolean fields
+            if (in_array($formType, ['checkbox'])) {
+                $content .= "            \$fieldsToUpdate[] = \"`{$column}` = ?\";\n";
+                $content .= "            \$updateValues[] = isset(\$_POST['batch_{$column}']) ? 1 : 0;\n";
+                $content .= "            \$bindTypes .= 'i';\n";
+            } 
+            // Special handling for boolean_select fields
+            else if ($formType === 'boolean_select') {
+                $content .= "            \$fieldsToUpdate[] = \"`{$column}` = ?\";\n";
+                $content .= "            \$updateValues[] = isset(\$_POST['batch_{$column}']) && \$_POST['batch_{$column}'] ? 1 : 0;\n";
+                $content .= "            \$bindTypes .= 'i';\n";
+            }
+            // Special handling for multi_select fields
+            else if ($formType === 'multi_select') {
+                $content .= "            if (is_array(\$_POST['batch_{$column}'])) {\n";
+                $content .= "                \$fieldsToUpdate[] = \"`{$column}` = ?\";\n";
+                $content .= "                \$updateValues[] = implode(',', \$_POST['batch_{$column}']);\n";
+                $content .= "                \$bindTypes .= 's';\n";
+                $content .= "            }\n";
+            }
+            // Standard field handling
+            else {
+                if ($this->isColumnNullable($column)) {
+                    $content .= "            \$fieldsToUpdate[] = \"`{$column}` = ?\";\n";
+                    $content .= "            \$updateValues[] = empty(\$_POST['batch_{$column}']) ? null : \$_POST['batch_{$column}'];\n";
+                    $content .= "            \$bindTypes .= '" . ($formType === 'number' ? "i" : "s") . "';\n";
+                } else {
+                    $content .= "            \$fieldsToUpdate[] = \"`{$column}` = ?\";\n";
+                    $content .= "            \$updateValues[] = \$_POST['batch_{$column}'];\n";
+                    $content .= "            \$bindTypes .= '" . ($formType === 'number' ? "i" : "s") . "';\n";
+                }
+            }
+            
+            $content .= "        }\n\n";
+        }
+    }
+    
+    $content .= "        // No fields selected for update\n";
+    $content .= "        if (empty(\$fieldsToUpdate)) {\n";
+    $content .= "            \$response = ['success' => false, 'message' => 'No fields selected for update.'];\n";
+    $content .= "            break;\n";
+    $content .= "        }\n\n";
+    
+    $content .= "        // Begin transaction\n";
+    $content .= "        \$conn->begin_transaction();\n\n";
+    
+    $content .= "        try {\n";
+    
+    // Add audit fields
+    $content .= "            // Add audit fields\n";
+    
+    if (in_array('updated_at', $this->columns)) {
+        $content .= "            \$fieldsToUpdate[] = \"`updated_at` = CURRENT_TIMESTAMP\";\n";
+    }
+    
+    if (in_array('updated_by', $this->columns)) {
+        $content .= "            \$fieldsToUpdate[] = \"`updated_by` = ?\";\n";
+        $content .= "            \$updateValues[] = get_current_user_id();\n";
+        $content .= "            \$bindTypes .= 'i';\n";
+    }
+    
+    $content .= "\n";
+    
+    $content .= "            // Build the SQL query\n";
+    $content .= "            \$sql = \"UPDATE {$this->tableName} SET \" . implode(', ', \$fieldsToUpdate) . \" WHERE {$this->primaryKey} IN (\" . str_repeat('?,', count(\$idArray) - 1) . \"?)\"; \n";
+    $content .= "            \n";
+    $content .= "            // Prepare statement\n";
+    $content .= "            \$stmt = \$conn->prepare(\$sql);\n";
+    $content .= "            if (!\$stmt) {\n";
+    $content .= "                throw new Exception('Database prepare error: ' . \$conn->error);\n";
+    $content .= "            }\n\n";
+    
+    $content .= "            // All parameters: field values first, then IDs\n";
+    $content .= "            \$params = \$updateValues;\n";
+    $content .= "            foreach (\$idArray as \$id) {\n";
+    $content .= "                \$params[] = \$id;\n";
+    $content .= "                \$bindTypes .= 'i';\n";
+    $content .= "            }\n\n";
+    
+    $content .= "            // Bind parameters\n";
+    $content .= "            \$stmt->bind_param(\$bindTypes, ...\$params);\n\n";
+    
+    $content .= "            // Execute update\n";
+    $content .= "            if (!\$stmt->execute()) {\n";
+    $content .= "                throw new Exception('Error updating records: ' . \$stmt->error);\n";
+    $content .= "            }\n\n";
+    
+    $content .= "            \$affectedRows = \$stmt->affected_rows;\n";
+    $content .= "            \$stmt->close();\n\n";
+    
+    $content .= "            // Commit transaction\n";
+    $content .= "            \$conn->commit();\n\n";
+    
+    $content .= "            \$response = [\n";
+    $content .= "                'success' => true,\n";
+    $content .= "                'message' => \$affectedRows . ' record(s) updated successfully.',\n";
+    $content .= "                'affected_rows' => \$affectedRows\n";
+    $content .= "            ];\n";
+    $content .= "            \n";
+    $content .= "        } catch (Exception \$e) {\n";
+    $content .= "            // Rollback transaction on error\n";
+    $content .= "            \$conn->rollback();\n";
+    $content .= "            \n";
+    $content .= "            \$response = ['success' => false, 'message' => \$e->getMessage()];\n";
+    $content .= "        }\n";
+    $content .= "        break;\n\n";
+    
+    return $content;
+}
+
+}
